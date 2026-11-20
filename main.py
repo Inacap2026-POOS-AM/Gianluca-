@@ -1,69 +1,28 @@
-"""Sistema de Gestión de Empleados - EcoTech Solutions (menú por consola).
+"""Sistema de Gestión EcoTech Solutions (menú por consola) - Unidades 1, 2 y 3.
 
 Ejecutar con:  python main.py
+
+U3: el sistema exige inicio de sesión (bcrypt) y agrega el menú de servicios
+externos (clima y tipo de cambio) con manejo de errores y Plan B.
 """
 import logging
 import sqlite3
 import sys
 
+from config import Configuracion, configurar_logging
+from consola import pedir_confirmacion, pedir_entero, pedir_monto, pedir_texto, titulo
 from dominio import Departamento, Empleado, Proyecto, Reportable
-from dominio.excepciones import EcoTechError, PersistenciaError
-from repositorio import DepartamentoRepositorio, EmpleadoRepositorio, ProyectoRepositorio
+from dominio.excepciones import AccesoDenegadoError, EcoTechError
+from dominio.ubicacion import UbicacionProyecto
+from dominio.usuario import Usuario
+from menu_servicios import MenuServiciosExternos, MenuUsuarios, iniciar_sesion
+from repositorio import (DepartamentoRepositorio, EmpleadoRepositorio, ProyectoRepositorio, UbicacionRepositorio,
+                         UsuarioRepositorio)
 from repositorio.conexion import cargar_variables_entorno, inicializar_bd, obtener_conexion
+from seguridad.autenticacion import ServicioAutenticacion
+from servicios import ServiciosExternos, crear_servicios
 
-
-# =====================================================================
-# Lectura segura de datos por teclado: nunca dejan caer el programa
-# =====================================================================
-def pedir_texto(mensaje: str, obligatorio: bool = True, actual: str | None = None) -> str:
-    """Si se pasa 'actual', presionar Enter conserva ese valor (modo edición)."""
-    while True:
-        valor = input(mensaje).strip()
-        if valor:
-            return valor
-        if actual is not None:
-            return actual
-        if not obligatorio:
-            return ""
-        print("  ! Este dato es obligatorio.")
-
-
-def pedir_entero(mensaje: str, minimo: int = 0, permitir_vacio: bool = False) -> int | None:
-    while True:
-        texto = input(mensaje).strip()
-        if not texto and permitir_vacio:
-            return None
-        try:
-            valor = int(texto)
-        except ValueError:
-            print("  ! Debe ingresar un número entero.")
-            continue
-        if valor < minimo:
-            print(f"  ! El número debe ser mayor o igual a {minimo}.")
-            continue
-        return valor
-
-
-def pedir_monto(mensaje: str, actual: float | None = None) -> float:
-    """Acepta '850000', '850.000' o '$850.000' (montos en pesos, sin decimales)."""
-    while True:
-        texto = input(mensaje).strip().replace("$", "").replace(".", "").replace(" ", "")
-        if not texto and actual is not None:
-            return actual
-        try:
-            return float(int(texto))
-        except ValueError:
-            print("  ! Ingrese un monto en pesos, solo números (ej. 850000).")
-
-
-def pedir_confirmacion(mensaje: str) -> bool:
-    return input(f"{mensaje} (s/n): ").strip().lower() in ("s", "si", "sí")
-
-
-def titulo(texto: str) -> None:
-    print("\n" + "=" * 60)
-    print(f" {texto}")
-    print("=" * 60)
+logger = logging.getLogger(__name__)
 
 
 # =====================================================================
@@ -72,22 +31,36 @@ def titulo(texto: str) -> None:
 class SistemaEcoTech:
     """Orquesta el menú. No contiene SQL: todo pasa por los repositorios."""
 
-    def __init__(self, conexion: sqlite3.Connection):
+    def __init__(self, conexion: sqlite3.Connection, usuario: Usuario | None = None,
+                 servicios: ServiciosExternos | None = None, config: Configuracion | None = None,
+                 auth: ServicioAutenticacion | None = None):
         self.empleados = EmpleadoRepositorio(conexion)
         self.departamentos = DepartamentoRepositorio(conexion)
         self.proyectos = ProyectoRepositorio(conexion)
+        self.ubicaciones = UbicacionRepositorio(conexion)
+        self.usuarios = UsuarioRepositorio(conexion)
+        self.usuario = usuario
+        self.servicios = servicios
+        self.config = config
+        self.auth = auth
 
     def ejecutar(self) -> None:
+        # Control de acceso: sin usuario autenticado no se muestra ninguna funcionalidad
+        if self.usuario is None:
+            raise AccesoDenegadoError("Debe iniciar sesión para usar el sistema.")
         self._ofrecer_datos_de_ejemplo()
         opciones = {
             "1": self.menu_empleados,
             "2": self.menu_departamentos,
             "3": self.menu_proyectos,
             "4": self.reporte_general,
+            "5": self.menu_servicios_externos,
+            "6": self.menu_usuarios,
         }
         while True:
-            titulo("EcoTech Solutions - Gestión de Empleados")
-            print(" 1. Empleados\n 2. Departamentos\n 3. Proyectos\n 4. Reporte general\n 0. Salir")
+            titulo(f"EcoTech Solutions - Sesión: {self.usuario.nombre_usuario} ({self.usuario.rol})")
+            print(" 1. Empleados\n 2. Departamentos\n 3. Proyectos\n 4. Reporte general\n"
+                  " 5. Servicios externos (clima, tipo de cambio, pagos)\n 6. Usuarios (admin)\n 0. Salir")
             opcion = input("Opción: ").strip()
             if opcion == "0":
                 print("Hasta luego.")
@@ -96,14 +69,17 @@ class SistemaEcoTech:
             if accion is None:
                 print("  ! Opción no válida.")
                 continue
-            accion()
+            self._ejecutar_seguro(accion)
 
     def _ejecutar_seguro(self, accion) -> None:
-        """Ejecuta una acción del menú y muestra cualquier error del negocio sin cerrar el programa."""
+        """Ejecuta una acción del menú y muestra cualquier error sin cerrar el programa."""
         try:
             accion()
         except EcoTechError as error:
             print(f"  ! {error}")
+        except Exception:  # noqa: BLE001 - última barrera: se registra la traza, no se muestra
+            logger.exception("Error inesperado en el menú")
+            print("  ! Ocurrió un error inesperado. El detalle quedó en logs/ecotech.log.")
 
     def _submenu(self, nombre: str, opciones: dict) -> None:
         while True:
@@ -118,6 +94,23 @@ class SistemaEcoTech:
                 print("  ! Opción no válida.")
                 continue
             self._ejecutar_seguro(opciones[opcion][1])
+
+    # -------------------- SERVICIOS EXTERNOS (U3) --------------------
+    def menu_servicios_externos(self) -> None:
+        if self.servicios is None or self.config is None:
+            print("  ! Los servicios externos no están configurados.")
+            return
+        menu = MenuServiciosExternos(self.servicios, self.config, self.proyectos, self.empleados, self.ubicaciones)
+        self._submenu("Servicios externos", menu.opciones())
+
+    def menu_usuarios(self) -> None:
+        menu = MenuUsuarios(self.auth, self.usuarios, self.usuario)
+        try:
+            menu.verificar_admin()
+        except AccesoDenegadoError as error:
+            print(f"  ! {error}")
+            return
+        self._submenu("Usuarios", menu.opciones())
 
     # ------------------------- EMPLEADOS -------------------------
     def menu_empleados(self) -> None:
@@ -328,25 +321,47 @@ class SistemaEcoTech:
         ]
         for rut, nombre, email, cargo, sueldo, ingreso, depto in datos:
             self.empleados.guardar(Empleado(rut, nombre, email, cargo, sueldo, ingreso, depto))
-        self.proyectos.guardar(Proyecto("Paneles Solares Planta Sur", "Instalación de energía solar", "2026-08-01",
-                                        ruts_asignados=["15.678.234-3", "19.876.543-0"]))
+        solar = self.proyectos.guardar(Proyecto("Paneles Solares Planta Sur", "Instalación de energía solar",
+                                                "2026-08-01", ruts_asignados=["15.678.234-3", "19.876.543-0"]))
+        eolico = self.proyectos.guardar(Proyecto("Parque Eólico Arequipa", "Montaje de aerogeneradores",
+                                                 "2026-09-15", ruts_asignados=["12.345.678-5", "19.876.543-0"]))
+        reciclaje = self.proyectos.guardar(Proyecto("Reciclaje Industrial Medellín", "Planta de reciclaje",
+                                                    "2026-10-01", ruts_asignados=["18.234.567-9"]))
+        # U3: ubicación de cada proyecto (define el clima a consultar y la moneda de pago)
+        self.ubicaciones.guardar(UbicacionProyecto(solar, "Antofagasta", "CL"))
+        self.ubicaciones.guardar(UbicacionProyecto(eolico, "Arequipa", "PE"))
+        self.ubicaciones.guardar(UbicacionProyecto(reciclaje, "Medellín", "CO"))
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.WARNING, format="[%(levelname)s] %(message)s")
+    configurar_logging()
     cargar_variables_entorno()
+    conexion = None
+    servicios = None
     try:
+        config = Configuracion.desde_entorno()
         conexion = obtener_conexion()
         inicializar_bd(conexion)
-    except PersistenciaError as error:
-        print(f"No se pudo iniciar el sistema: {error}")
-        return 1
-    try:
-        SistemaEcoTech(conexion).ejecutar()
+        auth = ServicioAutenticacion(UsuarioRepositorio(conexion), config.bcrypt_rondas)
+        usuario = iniciar_sesion(auth)
+        if usuario is None:
+            return 1
+        servicios = crear_servicios(conexion, config)
+        SistemaEcoTech(conexion, usuario, servicios, config, auth).ejecutar()
     except (KeyboardInterrupt, EOFError):
         print("\nSaliendo del sistema...")
+    except EcoTechError as error:
+        print(f"No se pudo iniciar el sistema: {error}")
+        return 1
+    except Exception:  # noqa: BLE001 - nunca mostrar una traza al usuario
+        logger.exception("Error inesperado al iniciar")
+        print("Ocurrió un error inesperado. El detalle quedó en logs/ecotech.log.")
+        return 1
     finally:
-        conexion.close()
+        if servicios is not None:
+            servicios.cerrar()
+        if conexion is not None:
+            conexion.close()
     return 0
 
 

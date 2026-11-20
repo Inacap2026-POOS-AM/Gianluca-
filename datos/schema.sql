@@ -43,3 +43,57 @@ CREATE TABLE IF NOT EXISTS asignacion (
     FOREIGN KEY (rut_empleado) REFERENCES empleado(rut),
     FOREIGN KEY (proyecto_id)  REFERENCES proyecto(id)
 );
+
+-- =====================================================================
+-- Unidad 3: usuarios, ubicación de proyectos y datos de APIs externas
+-- =====================================================================
+
+-- Usuarios del sistema. La BD misma rechaza contraseñas en texto plano:
+-- solo acepta un hash bcrypt ($2a$/$2b$/$2y$, 60 caracteres).
+CREATE TABLE IF NOT EXISTS usuario (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre_usuario     TEXT    NOT NULL UNIQUE,
+    hash_contrasena    TEXT    NOT NULL
+                       CHECK (length(hash_contrasena) = 60 AND substr(hash_contrasena, 1, 2) = '$2'),
+    rol                TEXT    NOT NULL CHECK (rol IN ('admin', 'operador')),
+    intentos_fallidos  INTEGER NOT NULL DEFAULT 0,
+    bloqueado_hasta    TEXT,
+    creado_en          TEXT    NOT NULL
+);
+
+-- Dónde se ejecuta cada proyecto (ciudad para el clima y país para la moneda de pago)
+CREATE TABLE IF NOT EXISTS ubicacion_proyecto (
+    proyecto_id  INTEGER PRIMARY KEY,
+    ciudad       TEXT NOT NULL,
+    codigo_pais  TEXT NOT NULL CHECK (length(codigo_pais) = 2),
+    FOREIGN KEY (proyecto_id) REFERENCES proyecto(id) ON DELETE CASCADE
+);
+
+-- Clima obtenido desde Open-Meteo. La restricción UNIQUE hace la carga IDEMPOTENTE:
+-- la misma medición (ciudad + país + hora de medición) nunca se guarda dos veces.
+CREATE TABLE IF NOT EXISTS registro_clima (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    clave_ciudad  TEXT    NOT NULL,
+    ciudad        TEXT    NOT NULL,
+    codigo_pais   TEXT    NOT NULL,
+    latitud       REAL    NOT NULL,
+    longitud      REAL    NOT NULL,
+    temperatura   REAL    NOT NULL,
+    humedad       INTEGER NOT NULL CHECK (humedad BETWEEN 0 AND 100),
+    codigo_clima  INTEGER NOT NULL,
+    viento_kmh    REAL    NOT NULL CHECK (viento_kmh >= 0),
+    medido_en     TEXT    NOT NULL,
+    obtenido_en   TEXT    NOT NULL,
+    UNIQUE (clave_ciudad, codigo_pais, medido_en)
+);
+
+-- Tipo de cambio obtenido desde ExchangeRate-API (1 unidad de 'moneda' = valor_clp pesos).
+-- Una tasa por moneda y por fecha de publicación (idempotente).
+CREATE TABLE IF NOT EXISTS tipo_cambio (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    moneda           TEXT NOT NULL CHECK (length(moneda) = 3),
+    valor_clp        REAL NOT NULL CHECK (valor_clp > 0),
+    actualizado_api  TEXT NOT NULL,
+    obtenido_en      TEXT NOT NULL,
+    UNIQUE (moneda, actualizado_api)
+);

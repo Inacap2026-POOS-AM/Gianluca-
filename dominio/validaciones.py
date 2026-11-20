@@ -4,6 +4,7 @@ Se centralizan aquí para no repetir la misma lógica en Persona, Empleado,
 Departamento y Proyecto (principio DRY).
 """
 import re
+import unicodedata
 from datetime import date
 
 from dominio.excepciones import DatoInvalidoError, RutInvalidoError
@@ -77,3 +78,87 @@ def normalizar_rut(valor) -> str:
     if calcular_digito_verificador(int(cuerpo)) != dv:
         raise RutInvalidoError(f"El dígito verificador del RUT '{valor}' no es correcto.")
     return f"{int(cuerpo)}-{dv}"
+
+
+# =====================================================================
+# Unidad 3: validación de entradas para las consultas a las APIs
+# =====================================================================
+# Países donde EcoTech ejecuta proyectos y la moneda en que se paga a los trabajadores.
+# Funciona como lista blanca: solo se consultan a la API valores conocidos.
+PAIS_A_MONEDA = {
+    "CL": "CLP", "PE": "PEN", "AR": "ARS", "CO": "COP", "MX": "MXN", "BR": "BRL",
+    "BO": "BOB", "UY": "UYU", "PY": "PYG", "EC": "USD", "US": "USD", "ES": "EUR",
+    "DE": "EUR", "CA": "CAD",
+}
+MONEDAS_SOPORTADAS = frozenset(PAIS_A_MONEDA.values()) | {"EUR", "USD", "GBP", "CNY", "JPY"}
+
+# Letras de cualquier idioma (incluye tildes y ñ) separadas por espacio, guion, punto o apóstrofo
+_PATRON_CIUDAD = re.compile(r"^[^\W\d_]+(?:[ '.\-]+[^\W\d_]+)*\.?$")
+_PATRON_USUARIO = re.compile(r"^[a-z0-9._]{3,30}$")
+
+
+def validar_ciudad(valor) -> str:
+    """Nombre de ciudad: 2 a 60 caracteres, solo letras y separadores comunes.
+
+    Bloquea números, símbolos y textos tipo  "Santiago&count=100"  o  "../../",
+    que podrían alterar la consulta enviada a la API.
+    """
+    ciudad = validar_texto(valor, "ciudad", 60)
+    ciudad = re.sub(r"\s+", " ", ciudad)
+    if len(ciudad) < 2 or not _PATRON_CIUDAD.match(ciudad):
+        raise DatoInvalidoError("La ciudad solo puede contener letras, espacios y guiones (ej. 'Puerto Montt').")
+    return ciudad
+
+
+def validar_codigo_pais(valor) -> str:
+    codigo = validar_texto(valor, "país", 2).upper()
+    if codigo not in PAIS_A_MONEDA:
+        permitidos = ", ".join(sorted(PAIS_A_MONEDA))
+        raise DatoInvalidoError(f"País no soportado. Use un código ISO de 2 letras: {permitidos}.")
+    return codigo
+
+
+def validar_moneda(valor) -> str:
+    codigo = validar_texto(valor, "moneda", 3).upper()
+    if codigo not in MONEDAS_SOPORTADAS:
+        permitidas = ", ".join(sorted(MONEDAS_SOPORTADAS))
+        raise DatoInvalidoError(f"Moneda no soportada. Use un código ISO 4217: {permitidas}.")
+    return codigo
+
+
+def moneda_de_pais(codigo_pais: str) -> str:
+    return PAIS_A_MONEDA[validar_codigo_pais(codigo_pais)]
+
+
+def normalizar_clave(texto: str) -> str:
+    """'Medellín ' -> 'medellin'. Sirve para buscar en la BD sin depender de tildes o mayúsculas."""
+    sin_tildes = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", sin_tildes).strip().casefold()
+
+
+# ----------------------------- Usuarios -----------------------------
+LARGO_MAXIMO_CONTRASENA_BYTES = 72  # bcrypt solo considera los primeros 72 bytes
+
+
+def validar_nombre_usuario(valor) -> str:
+    nombre = validar_texto(valor, "usuario", 30).lower()
+    if not _PATRON_USUARIO.match(nombre):
+        raise DatoInvalidoError("El usuario debe tener 3 a 30 caracteres: letras minúsculas, números, '.' o '_'.")
+    return nombre
+
+
+def validar_contrasena_nueva(contrasena, nombre_usuario: str = "") -> str:
+    """Política mínima: 8+ caracteres, mayúscula, minúscula y número; no puede contener el usuario."""
+    if not isinstance(contrasena, str) or not contrasena:
+        raise DatoInvalidoError("La contraseña no puede estar vacía.")
+    if contrasena != contrasena.strip():
+        raise DatoInvalidoError("La contraseña no puede empezar ni terminar con espacios.")
+    if len(contrasena) < 8:
+        raise DatoInvalidoError("La contraseña debe tener al menos 8 caracteres.")
+    if len(contrasena.encode("utf-8")) > LARGO_MAXIMO_CONTRASENA_BYTES:
+        raise DatoInvalidoError("La contraseña es demasiado larga (máximo 72 bytes).")
+    if not (re.search(r"[a-z]", contrasena) and re.search(r"[A-Z]", contrasena) and re.search(r"\d", contrasena)):
+        raise DatoInvalidoError("La contraseña debe incluir mayúsculas, minúsculas y números.")
+    if nombre_usuario and nombre_usuario.lower() in contrasena.lower():
+        raise DatoInvalidoError("La contraseña no puede contener el nombre de usuario.")
+    return contrasena

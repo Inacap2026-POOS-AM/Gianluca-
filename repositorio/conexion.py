@@ -53,7 +53,8 @@ def obtener_conexion(ruta: str | None = None) -> sqlite3.Connection:
         conexion.row_factory = sqlite3.Row
         return conexion
     except sqlite3.Error as error:
-        raise PersistenciaError(f"No se pudo conectar a la base de datos '{ruta}': {error}") from error
+        logger.error("No se pudo abrir la BD '%s': %s", ruta, error)
+        raise PersistenciaError("No se pudo abrir la base de datos. Revise ECOTECH_DB_PATH en el .env.") from error
 
 
 def inicializar_bd(conexion: sqlite3.Connection | None = None) -> None:
@@ -67,9 +68,11 @@ def inicializar_bd(conexion: sqlite3.Connection | None = None) -> None:
         conexion.executescript(esquema)
         conexion.commit()
     except OSError as error:
-        raise PersistenciaError(f"No se pudo leer el esquema '{ARCHIVO_ESQUEMA}': {error}") from error
+        logger.error("No se pudo leer el esquema '%s': %s", ARCHIVO_ESQUEMA, error)
+        raise PersistenciaError("No se pudo leer datos/schema.sql.") from error
     except sqlite3.Error as error:
-        raise PersistenciaError(f"Error al crear las tablas: {error}") from error
+        logger.error("Error al crear las tablas: %s", error)
+        raise PersistenciaError("Error al crear las tablas de la base de datos.") from error
     finally:
         if cerrar_al_final:
             conexion.close()

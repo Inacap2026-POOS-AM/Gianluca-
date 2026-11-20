@@ -3,11 +3,16 @@
 Todos los repositorios heredan de aquí, así el manejo de commit/rollback y la
 conversión de errores de sqlite3 a errores del negocio se escribe una sola vez.
 """
+import logging
 import sqlite3
 from contextlib import contextmanager
 
 from dominio.excepciones import (DatoInvalidoError, EcoTechError, PersistenciaError,
                                  ReferenciaInvalidaError, RegistroDuplicadoError)
+
+logger = logging.getLogger(__name__)
+# U3: el usuario ve un mensaje genérico; el detalle técnico de sqlite3 solo va al log
+MENSAJE_ERROR_BD = "Error interno de base de datos. El detalle quedó registrado en logs/ecotech.log."
 
 
 class RepositorioBase:
@@ -33,7 +38,8 @@ class RepositorioBase:
             raise self._traducir_error_integridad(error) from error
         except sqlite3.Error as error:
             self._conexion.rollback()
-            raise PersistenciaError(f"Error de base de datos: {error}") from error
+            logger.error("Error sqlite3 en transacción: %s", error)
+            raise PersistenciaError(MENSAJE_ERROR_BD) from error
         except EcoTechError:
             # Error de negocio detectado a mitad de la transacción: se deshace y se relanza
             self._conexion.rollback()
@@ -47,20 +53,23 @@ class RepositorioBase:
         try:
             return self._conexion.execute(sql, parametros).fetchone()
         except sqlite3.Error as error:
-            raise PersistenciaError(f"Error al consultar la base de datos: {error}") from error
+            logger.error("Error sqlite3 en consulta: %s", error)
+            raise PersistenciaError(MENSAJE_ERROR_BD) from error
 
     def _consultar_todos(self, sql: str, parametros: tuple = ()) -> list[sqlite3.Row]:
         try:
             return self._conexion.execute(sql, parametros).fetchall()
         except sqlite3.Error as error:
-            raise PersistenciaError(f"Error al consultar la base de datos: {error}") from error
+            logger.error("Error sqlite3 en consulta: %s", error)
+            raise PersistenciaError(MENSAJE_ERROR_BD) from error
 
     def _traducir_error_integridad(self, error: sqlite3.IntegrityError) -> EcoTechError:
+        logger.warning("Restricción de integridad: %s", error)
         mensaje = str(error).upper()
         if "UNIQUE" in mensaje or "PRIMARY KEY" in mensaje:
             return RegistroDuplicadoError(self.MENSAJE_DUPLICADO)
         if "FOREIGN KEY" in mensaje:
             return ReferenciaInvalidaError(self.MENSAJE_REFERENCIA)
         if "CHECK" in mensaje or "NOT NULL" in mensaje:
-            return DatoInvalidoError(f"La base de datos rechazó un dato inválido: {error}")
-        return PersistenciaError(f"Error de integridad: {error}")
+            return DatoInvalidoError("La base de datos rechazó un dato inválido.")
+        return PersistenciaError(MENSAJE_ERROR_BD)

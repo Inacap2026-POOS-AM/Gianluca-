@@ -1,2 +1,5 @@
-# sqlite3 viene incluido en Python (librería estándar), no se instala.
+# sqlite3, json, logging y getpass vienen incluidos en Python (librería estándar), no se instalan.
+# Versiones fijadas y verificadas en pypi.org (ver auditoria_ia.py --pypi).
+requests==2.32.5
+bcrypt==4.3.0
 python-dotenv==1.0.1
